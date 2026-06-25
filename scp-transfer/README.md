@@ -1,168 +1,347 @@
-# SCP Transfer Service Scripts
+# EC2-to-EC2 SCP Transfer Using Dedicated Service Account
 
-This directory contains scripts used to create and configure a dedicated Linux service account for secure file transfers between servers.
+## Overview
 
-## Purpose
+This project provides a production-oriented approach for performing manual SCP file transfers between Amazon EC2 instances running Red Hat Enterprise Linux (RHEL).
 
-The `svc-transfer` account is designed for automated file transfers using SSH/SCP without granting interactive administrative privileges.
+The solution uses:
 
-Key objectives:
+* Dedicated service account (`svc-transfer`)
+* SSH public key authentication (ED25519)
+* Password-locked account
+* Non-sudo user
+* Dedicated transfer directory
+* Custom SSH port support
+* SELinux-compatible configuration
 
-* Create a dedicated service account
-* Disable password-based login
-* Remove administrative (wheel/sudo) access
-* Prepare SSH key authentication
-* Create a dedicated transfer directory
-* Support secure server-to-server file transfers
+The design allows any participating EC2 instance to act as either:
+
+* SCP Source
+* SCP Target
+
+without impacting existing administrative users such as `icuser`, `ec2-user`, or other operational accounts.
 
 ---
 
-## Scripts
+## Architecture
 
-### 01_setup_svc_transfer.sh
+```text
++----------------------+
+| EC2-A                |
+| svc-transfer         |
++----------+-----------+
+           |
+           | SCP / SSH
+           | Port 24574
+           |
++----------v-----------+
+| EC2-B                |
+| svc-transfer         |
++----------------------+
+```
 
-Creates and hardens the service account.
+Each participating server contains:
 
-#### Actions performed
+```text
+/home/svc-transfer/.ssh/
+├── id_ed25519_svc-transfer
+├── id_ed25519_svc-transfer.pub
+├── authorized_keys
+└── config
+```
 
-1. Creates user `svc-transfer` if it does not exist.
-2. Locks the local password.
-3. Removes membership from the `wheel` group if present.
-4. Creates transfer directory:
+The same SSH key pair is distributed to all participating servers to support bidirectional SCP transfers.
+
+---
+
+## Security Design
+
+### Service Account
+
+A dedicated account is used:
+
+```text
+svc-transfer
+```
+
+The account:
+
+* Has no sudo privileges
+* Has a locked password
+* Uses SSH key authentication only
+* Is dedicated exclusively to server-to-server file transfers
+
+### SSH Authentication
+
+Authentication uses:
+
+```text
+ED25519
+```
+
+Benefits:
+
+* Modern cryptography
+* Strong security
+* Faster authentication
+* Recommended by OpenSSH
+
+### Password Authentication
+
+Password authentication is intentionally disabled.
+
+The account password is locked using:
+
+```bash
+passwd -l svc-transfer
+```
+
+### Dedicated Transfer Directory
+
+All file transfers should use:
 
 ```text
 /data/transfer
 ```
 
-5. Sets ownership:
+This prevents unnecessary write access to other system locations.
+
+---
+
+## Repository Contents
 
 ```text
-svc-transfer:svc-transfer
+.
+├── 01_setup_svc_transfer.sh
+├── 02_generate_key.sh
+├── 03_install_key.sh
+└── README.md
 ```
 
-6. Sets permissions:
+---
 
-```text
-750
-```
+## Script Execution Order
 
-7. Creates SSH directory:
+### Step 1
 
-```text
-/home/svc-transfer/.ssh
-```
-
-8. Applies secure permissions.
-9. Restores SELinux contexts (if SELinux is enabled).
-
-#### Execute
+Run on ALL participating EC2 instances.
 
 ```bash
 sudo bash 01_setup_svc_transfer.sh
 ```
 
-#### Expected Output
+This script:
+
+* Creates the `svc-transfer` user
+* Locks the account password
+* Removes sudo privileges if present
+* Creates `/data/transfer`
+* Creates `.ssh` directory
+* Applies ownership and permissions
+* Restores SELinux contexts
+
+---
+
+### Step 2
+
+Run on ONE EC2 instance only.
+
+Example:
 
 ```text
-Completed
+EC2-A
+```
+
+Execute:
+
+```bash
+sudo bash 02_generate_key.sh
+```
+
+This script:
+
+* Generates ED25519 SSH key pair
+* Creates `authorized_keys`
+* Applies required permissions
+* Restores SELinux contexts
+
+Generated files:
+
+```text
+id_ed25519_svc-transfer
+id_ed25519_svc-transfer.pub
 ```
 
 ---
 
-### 03_install_key.sh
+### Step 3
 
-Installs the SSH public key used for authentication.
+Copy generated key files to all participating EC2 instances.
 
-#### Purpose
-
-Enables key-based authentication for the `svc-transfer` account.
-
-#### Typical Actions
-
-* Create or update:
+Files to distribute:
 
 ```text
-/home/svc-transfer/.ssh/authorized_keys
+id_ed25519_svc-transfer
+id_ed25519_svc-transfer.pub
 ```
 
-* Set correct ownership and permissions.
-* Enable passwordless SSH authentication.
+Destination:
 
-#### Execute
+```text
+/home/svc-transfer/.ssh/
+```
+
+---
+
+### Step 4
+
+Run on ALL participating EC2 instances.
 
 ```bash
 sudo bash 03_install_key.sh
+```
+
+This script:
+
+* Creates `authorized_keys`
+* Fixes ownership
+* Fixes permissions
+* Restores SELinux contexts
+
+---
+
+## SSH Configuration
+
+Example:
+
+```text
+Host ec2-a
+    HostName 192.168.50.51
+    User svc-transfer
+    Port 24574
+    IdentityFile ~/.ssh/id_ed25519_svc-transfer
+
+Host ec2-b
+    HostName 192.168.50.52
+    User svc-transfer
+    Port 24574
+    IdentityFile ~/.ssh/id_ed25519_svc-transfer
+```
+
+Location:
+
+```text
+/home/svc-transfer/.ssh/config
+```
+
+Permissions:
+
+```bash
+chmod 600 ~/.ssh/config
 ```
 
 ---
 
 ## Validation
 
-Verify account:
+### Verify User
 
 ```bash
 id svc-transfer
 ```
 
-Verify password lock:
+### Verify No Sudo Access
 
 ```bash
-passwd -S svc-transfer
+sudo -l -U svc-transfer
 ```
 
 Expected:
 
 ```text
-svc-transfer LK
+User svc-transfer is not allowed to run sudo
 ```
 
-Verify SSH directory:
+### Verify SSH
 
 ```bash
-ls -ld /home/svc-transfer/.ssh
+sudo su - svc-transfer
+
+ssh ec2-b
 ```
 
-Expected permissions:
-
-```text
-drwx------
-```
-
-Verify transfer directory:
+### Verify SCP
 
 ```bash
-ls -ld /data/transfer
+scp test.txt ec2-b:/data/transfer/
 ```
 
-Expected permissions:
+### Verify Reverse SCP
+
+```bash
+scp ec2-b:/data/transfer/test.txt .
+```
+
+---
+
+## Security Group Requirements
+
+Allow inbound traffic on the custom SSH port:
 
 ```text
-drwxr-x---
+TCP 24574
 ```
 
----
+Recommended source:
 
-## Security Notes
+```text
+Source Security Group
+```
 
-* Password authentication should remain disabled.
-* SSH key authentication is recommended.
-* Do not add the account to the `wheel` or `sudo` group.
-* Restrict access to authorized administrators only.
-* Rotate SSH keys periodically according to company security policy.
+instead of broad CIDR ranges.
 
 ---
 
-## Tested On
+## SELinux
 
-* Red Hat Enterprise Linux (RHEL)
-* Rocky Linux
-* AlmaLinux
-* CentOS
-* Amazon Linux 2
-* Amazon Linux 2023
+RHEL environments running SELinux require:
+
+```bash
+restorecon -Rv /home/svc-transfer
+```
+
+The scripts perform this automatically.
 
 ---
 
-## Author
+## Operational Notes
 
-Internal Infrastructure / DevOps Operations
+This solution is intended for:
+
+* Manual administrator-initiated file transfers
+* Internal EC2-to-EC2 communication
+* Production environments requiring dedicated transfer accounts
+
+This solution is not intended to replace:
+
+* AWS DataSync
+* S3-based file exchange
+* Enterprise Managed File Transfer (MFT) platforms
+
+---
+
+## Rollback
+
+Remove service account:
+
+```bash
+sudo userdel -r svc-transfer
+```
+
+Remove transfer directory:
+
+```bash
+sudo rm -rf /data/transfer
+```
+
+Review SSH configuration before deleting shared key material.
