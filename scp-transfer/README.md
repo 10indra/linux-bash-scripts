@@ -32,7 +32,7 @@ without impacting existing administrative users such as `icuser`, `ec2-user`, or
 +----------+-----------+
            |
            | SCP / SSH
-           | Port 24574
+           | Port 22
            |
 +----------v-----------+
 | EC2-B                |
@@ -289,7 +289,7 @@ scp ec2-b:/data/transfer/test.txt .
 Allow inbound traffic on the custom SSH port:
 
 ```text
-TCP 24574
+TCP 22
 ```
 
 Recommended source:
